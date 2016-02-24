@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 import struct, socket, threading, time, random
-from SocketServer import BaseRequestHandler, ThreadingMixIn, TCPServer
+try:
+    from SocketServer import BaseRequestHandler, ThreadingMixIn, TCPServer
+except ImportError:
+    from socketserver import BaseRequestHandler, ThreadingMixIn, TCPServer
 
 # Signal types defined by TOBI interface A
 TIA_SIG_EEG         = 0x00000001        # Electroencephalogram
@@ -188,7 +191,7 @@ class TiATCPClientHandler(threading.Thread):
         except Exception as e:
             print('Error in TCP handler:', e)
             import traceback
-            print traceback.format_exc()
+            print(traceback.format_exc())
 
         self.sock.close()
 
