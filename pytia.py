@@ -76,7 +76,7 @@ class TiASignalConfig(object):
             metainfo += '<masterSignal samplingRate="%d" blockSize="%d"/>\n' % (self.sample_rate, self.blocksize)
 
         metainfo += '<signal type="%s" samplingRate="%d" blockSize="%d" numChannels="%d">\n' \
-                        (self.type, self.sample_rate, self.blocksize, self.channels)
+                        % (self.type, self.sample_rate, self.blocksize, self.channels)
         for i in range(self.channels):
             metainfo += '<channel nr="%d" label="channel%d"/>\n' % (i+1, i+1)
         metainfo += '</signal>\n'
@@ -225,7 +225,7 @@ class TiAConnectionHandler(BaseRequestHandler):
                 # respond with the signal information that the "server" is configured to provide
                 metainfo = '<tiaMetaInfo version="1.0">\n'
                 metainfo += '<subject id="%s" firstName="%s" surname="%s"/>\n' % self.server.subject
-                for s in self.signals:
+                for s in self.server.signals:
                     metainfo += s.get_metainfo()
 
                 metainfo += '</tiaMetaInfo>\n\n'
