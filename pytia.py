@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-import struct, socket, threading, time, random
-try:
-    from SocketServer import BaseRequestHandler, ThreadingMixIn, TCPServer
-except ImportError:
+import struct, socket, threading, time, random, sys
+
+if sys.version_info > (3,):
     from socketserver import BaseRequestHandler, ThreadingMixIn, TCPServer
+    long = int
+else:
+    from SocketServer import BaseRequestHandler, ThreadingMixIn, TCPServer
+
+TIA_ENCODING = 'utf-8'
 
 # Signal types defined by TOBI interface A
 TIA_SIG_EEG         = 0x00000001        # Electroencephalogram
@@ -27,6 +31,14 @@ TIA_SIG_USER_4      = 0x00080000        # User 4
 TIA_SIG_UNDEFINED   = 0x00100000        # undefined signal type
 TIA_SIG_EVENT       = 0x00200000        # event 
 
+# Signal names for the user defined streams
+TIA_SIG_NAMES = { \
+    TIA_SIG_USER_1 : 'user_1',        
+    TIA_SIG_USER_2 : 'user_2',        
+    TIA_SIG_USER_3 : 'user_3',        
+    TIA_SIG_USER_4 : 'user_4',        
+}
+
 # Control message commands
 TIA_CTRL_CHECK_PROTO_VERSION            = 'CheckProtocolVersion'
 TIA_CTRL_GET_METAINFO                   = 'GetMetaInfo'
@@ -41,9 +53,9 @@ TIA_VERSION = '1.0'
 # Every control message & response starts with this header
 TIA_MSG_HEADER      = 'TiA %s' % TIA_VERSION
 # Response to a successful control message
-TIA_OK_MSG          = 'TiA %s\nOK\n\n' % TIA_VERSION
+TIA_OK_MSG          = ('TiA %s\nOK\n\n' % TIA_VERSION).encode(TIA_ENCODING)
 # Basic error response
-TIA_ERROR_MSG       = 'TiA %s\nError\n\n' % TIA_VERSION
+TIA_ERROR_MSG       = ('TiA %s\nError\n\n' % TIA_VERSION).encode(TIA_ENCODING)
 # Extended error response
 TIA_ERROR_DESC_MSG  = 'TiA %s\nError\nContent-Length:%d\n\n%s' 
 
@@ -52,25 +64,71 @@ TIA_RAW_HEADER      = struct.Struct('<BIIQQQ')
 # TiA raw data packet version magic number
 TIA_RAW_VERSION = 0x03
 
-# pass instances of this class to the server to tell it the format of the
-# data that will be streamed through it. each class represents one "signal",
-# which can contain multiple channels.
+class TiAException(Exception): 
+    pass
+
 class TiASignalConfig(object):
-    
-    def __init__(self, channels, sample_rate, blocksize, callback, is_master=True, type='user_1', signal_flags=TIA_SIG_USER_1):
+    """
+    Encapsulates information about a single signal to be streamed through
+    a TiAServer instance, including number of channels, sample rate, blocksize 
+    (the number of samples per channel in each outgoing packet) and data type.
+    """
+
+    def __init__(self, channels, sample_rate, blocksize, callback, is_master=True, type=TIA_SIG_USER_1):
+        """ 
+        Create a signal. Parameters are:
+            
+            channels:       the number of channels in the signal (eg for an accelerometer with 
+                            3 axes you would have 3 channels).
+
+            sample_rate:    rate in Hz that the server should poll the provider of this signal
+                            for new data. Note that this value is actually ignored for any
+                            signals other than the 'master' signal! (see 'is_master' 
+                            parameter).
+
+            blocksize:      sets the number of samples the server will expect to be provided
+                            with every time it polls the signal callback method. For example,
+                            if you have 3 channels and a blocksize of 2, it will expect to
+                            receive 2 samples for each channel for a total of 6 values.
+
+            callback:       a method that when called by the server will return a flat list of
+                            blocksize samples per channel. For example, with 2 channels and
+                            a blocksize of 2, this method should return a list containing
+                            [ch1s1, ch2s2, ch2s1, ch2s2].
+
+            is_master:      indicates if this signal is the 'master' signal. The 'master' 
+                            signal sampling rate is the rate at which the server will 
+                            poll the set of signal callback methods for new data. Exactly
+                            one signal must be set as the master signal within each instance
+                            of a TiAServer.
+
+            type:           sets the TiA type of the signal. This should be one of the 
+                            TIA_SIG_NAME_USER_ constants. If you have multiple signals,
+                            you must use a different type for every signal. The default
+                            value is fine for a single signal. 
+
+        """
         self.channels = channels
         self.sample_rate = sample_rate
         self.blocksize = blocksize
-        self.type = type
-        self.signal_flags = signal_flags
+
+        self.signal_flags = type
+        self.type = TIA_SIG_NAMES[type]
         self.master = is_master
-        assert callback != None, "Must provide a data callback for every signal!"
+        if callback == None:
+            raise TiAException("Must provide a valid callback method for every signal")
+        
         self.callback = callback
         # raw data for each signal is a series of floats, with blocksize
         # samples per channel
         self.raw_data = struct.Struct('<' + 'f' * (self.channels * self.blocksize))
 
     def get_metainfo(self):
+        """
+        This method generates the XML signal description that the TiA server 
+        provides to TiA clients so that they can parse the data they receive. It
+        is only called by the TiAServer instance containing this signal config. 
+        """
         metainfo = ''
         if self.master:
             metainfo += '<masterSignal samplingRate="%d" blockSize="%d"/>\n' % (self.sample_rate, self.blocksize)
@@ -82,18 +140,50 @@ class TiASignalConfig(object):
         metainfo += '</signal>\n'
         return metainfo
 
-# just used to handle the basic TCP server functionality required
 class TiAServer(ThreadingMixIn, TCPServer): 
-
+    """
+    SocketServer-based TCP server with threading support via the MixIn class.
+    
+    This class implements the actual TCP server functionality, but the bulk of the
+    TiA code is in the TiATCPClientHandler class.
+    """
+    
     def start(self, signals, single_shot=False, subj_id='subject0', subj_fname='ABC', subj_lname='DEF'):
-        assert len(signals) > 0, "Must have at least 1 signal!"
-        num_master = 0
+        """
+        Call this function after creating the server object to begin listening for
+        connections from TiA clients. 
+
+        Parameters:
+
+            signals:        a list of one or more TiASignalConfig objects, exactly
+                            one of which must be configured as the 'master' signal.
+
+            single_shot:    if True, the server will only handle a single request and 
+                            then shut down. The default is to continue indefinitely.
+
+            subj_id:        subject ID (this is ignored by BBT architecture)
+
+            subj_fname:     subject first name (this is ignored by BBT architecture)
+
+            subj_lname:     subject surname (this is ignored by BBT architecture)
+        """
+
+        if len(signals) < 1:
+            raise TiAException("Must have at least 1 signal!")
+
+        num_master, master_index = 0, 0
         for i, sig in enumerate(signals):
             if sig.master:
                 num_master += 1
+                master_index = i
                 self.master_sample_rate = sig.sample_rate
-                assert i == 0, "Master signal must be first in the signal list!"
-        assert num_master == 1, "Must have exactly one 'Master' signal!"
+        
+        if num_master != 1:
+            raise TiAException("Must have exactly one 'Master' signal")
+
+        # put the master signal first in the list if it isn't there already
+        if not signals[0].master:
+            signals.insert(0, signals.pop(master_index))
 
         self.signals = signals
         self.subject = (subj_id, subj_fname, subj_lname)
@@ -114,8 +204,29 @@ class TiAServer(ThreadingMixIn, TCPServer):
 # then pauses until the server receives a 'StartDataTransmission' command.
 # After that it starts streaming data until told to stop. 
 class TiATCPClientHandler(threading.Thread):
+    """
+    Instances of this class are created each time a client requests a data 
+    connection from the server. Each encapsulates a thread that polls the 
+    sensor callbacks defined by the signal data, and sends TiA packets to the
+    connected client. 
 
-    def __init__(self, sock, signals, server_start_time, ):
+    TODO: should really only poll the sensors in one place, not in every
+    instance of this class (only a problem if multiple clients)
+    """
+
+    def __init__(self, sock, signals, server_start_time):
+        """
+        Parameters:
+            
+            sock:       the TCP socket created by the server in response to the
+                        client request. The socket is passed in in the pre-accept()
+                        state, ready to await the incoming connection once the 
+                        accept() method is called. 
+
+            server_start_time:      timestamp giving server start time. Used to 
+                                    generate timestamps for outgoing packets, although
+                                    the BBT architecture discards these.
+        """
         super(TiATCPClientHandler, self).__init__()
         self.allow_reuse_address = True # equivalent to setting SO_REUSEADDR
         self.sock = sock
@@ -125,6 +236,10 @@ class TiATCPClientHandler(threading.Thread):
         self.server_start_time = server_start_time
 
     def run(self):
+        """
+        Starts the thread to receive the incoming connection from the client, 
+        and then to begin streaming data back to it until told to stop.
+        """
         try:
             # wait for the TiA client to connect (the server will have sent
             # it the port to use)
@@ -163,7 +278,7 @@ class TiATCPClientHandler(threading.Thread):
             # the client disconnects
             while not self.finished:
                 # concatenate all the raw signal data together
-                raw_data = ''
+                raw_data = b''
                 for sig in self.signals:
                     sig_data = sig.callback()
                     raw_data += sig.raw_data.pack(*sig_data)
@@ -203,13 +318,13 @@ class TiAConnectionHandler(BaseRequestHandler):
 
         while True:
             print('>>>>>> BEGIN')
-            msg = self.request.recv(256).decode('utf-8')
+            msg = self.request.recv(256).decode(TIA_ENCODING)
 
-            msg = filter(bool, msg)
             print('<<<<<< END')
 
             # control messages are multi-line
             msg = msg.split('\n')
+            msg = list(filter(bool, msg))
 
             if len(msg) < 2 or not msg[0].startswith(TIA_MSG_HEADER):
                 self.request.sendall(self._get_error_response('Unknown protocol version (requires "%s")' % TIA_VERSION))
@@ -254,7 +369,8 @@ class TiAConnectionHandler(BaseRequestHandler):
                 return
 
     def _get_error_response(self, error_msg):
-        return TIA_ERROR_DESC_MSG % (TIA_VERSION, len(error_msg), error_msg)
+        resp = TIA_ERROR_DESC_MSG % (TIA_VERSION, len(error_msg), error_msg)
+        return resp.encode(TIA_ENCODING)
 
     def _get_signal_info(self):
         pass
@@ -269,7 +385,8 @@ class TiAConnectionHandler(BaseRequestHandler):
         print('Listening on %s:%d' % (sock.getsockname()))
         sock.listen(1)
         self.datahandler = TiATCPClientHandler(sock, self.server.signals, self.server.start_time)
-        return TIA_MSG_HEADER + '\nDataConnectionPort:%d\n\n' % port
+        resp = TIA_MSG_HEADER + '\nDataConnectionPort:%d\n\n' % port
+        return resp.encode(TIA_ENCODING)
 
 
 # this is probably only useful for testing the server class
@@ -279,7 +396,6 @@ class TiAClient(object):
         self.address = (server_address, server_port)
         self.ctrl_socket = None
         self.data_socket = None
-        self.tcp_mode = True # TODO UDP mode too? 
         self.bufsize = 1024
         self.var_header = None
         self.signal_data = []
@@ -309,8 +425,8 @@ class TiAClient(object):
         if not self.ctrl_socket:
             return (False, [])
 
-        self.ctrl_socket.send(msg)
-        resp = self.ctrl_socket.recv(1024)
+        self.ctrl_socket.send(msg.encode(TIA_ENCODING))
+        resp = self.ctrl_socket.recv(1024).decode(TIA_ENCODING)
         resp = resp.split('\n')
         if not resp[0].startswith(TIA_MSG_HEADER):
             return (False, [])
@@ -386,22 +502,17 @@ class TiAClient(object):
         pass
 
     def _start_streaming_data(self, server_address, data_port, proto):
-        assert (proto == 'UDP') or (proto == 'TCP')
+        if proto != 'TCP':
+            raise TiAException('Protocol "%s" not supported' % proto)
 
         # do this first to set up things on the server side
         if not self._cmd_start_data_transmission():
             return False
 
-        if proto == 'UDP':
-            self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-            self.tcp_mode = False
-            
-        else:
-            self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
-            self.data_socket.connect((server_address, data_port))
-            self.tcp_mode = True
+        self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        self.data_socket.connect((server_address, data_port))
 
-            return True
+        return True
     
     def stop_streaming_data(self):
         if not self._cmd_stop_data_transmission():
@@ -412,26 +523,39 @@ class TiAClient(object):
         return True
 
     def get_data(self):
-        if not self.tcp_mode:
-            return None # TODO UDP mode
-        
         data = self.data_socket.recv(self.bufsize)
-        # strip off header info and unpack data
-        fixed_header = TIA_RAW_HEADER.unpack(data[:TIA_RAW_HEADER.size])
-        if fixed_header[0] != 3 or fixed_header[1] != len(data):
-            return []
 
+        # might have multiple packets in the buffer here. this doesn't
+        # handle packets that straddle a buffer boundary, just multiple
+        # complete packets in the same buffer
+
+        offset = 0
+        packets = []
+        while offset < len(data):
+            # strip off header info and unpack data
+            fixed_header = TIA_RAW_HEADER.unpack(data[offset:offset+TIA_RAW_HEADER.size])
+            if fixed_header[0] != TIA_RAW_VERSION or fixed_header[1] > len(data)-offset:
+                # invalid packet/packet too small
+                print('Invalid packet %d==%d, %d > %d' % (fixed_header[0], TIA_RAW_VERSION, fixed_header[1], len(data)-offset))
+                return packets
+
+            packet = data[offset:offset+fixed_header[1]]
+            packets.append(self._process_packet(packet, fixed_header))
+            offset += fixed_header[1]
+
+        return packets
+
+    def _process_packet(self, packet, header):
         # count up number of flags set in the signal_type_flags field of the header
         # (should be one bit set for each distinct signal)
-        num_signals = bin(fixed_header[2]).count('1')
-        print('Number of signals: %d' % num_signals)
+        num_signals = bin(header[2]).count('1')
 
         # once we know that, we can parse the variable header to get the number
         # of channels and blocksize of each signal...
         if self.var_header == None:
             self.var_header = struct.Struct('<' + ('h' * num_signals * 2))
 
-        var_header_data = self.var_header.unpack(data[TIA_RAW_HEADER.size:TIA_RAW_HEADER.size+self.var_header.size])
+        var_header_data = self.var_header.unpack(packet[TIA_RAW_HEADER.size:TIA_RAW_HEADER.size+self.var_header.size])
 
         # now retrieve the samples from each signal. when blocksize > 1, the
         # samples are ordered like this (blocksize=4):
@@ -442,11 +566,11 @@ class TiAClient(object):
                 channels = var_header_data[i]
                 blocksize = var_header_data[num_signals+i]
                 self.signal_data.append(struct.Struct('<' + ('f' * channels * blocksize)))
-        else:
-            index = TIA_RAW_HEADER.size + self.var_header.size
-            for s in self.signal_data:
-                alldata.append(s.unpack(data[index:index+s.size]))
-                index += s.size
+
+        index = TIA_RAW_HEADER.size + self.var_header.size
+        for s in self.signal_data:
+            alldata.append(s.unpack(packet[index:index+s.size]))
+            index += s.size
 
         return alldata
 
@@ -456,6 +580,6 @@ def sk7_imu_callback():
 
 if __name__ == "__main__":
     server = TiAServer(('127.0.0.1', 9000), TiAConnectionHandler)
-    server.start([TiASignalConfig(5, 100, 1, sk7_imu_callback, True), TiASignalConfig(5, 100, 1, sk7_imu_callback, False, type='user_2', signal_flags=TIA_SIG_USER_2)])
+    server.start([TiASignalConfig(5, 100, 1, sk7_imu_callback, True), TiASignalConfig(5, 100, 1, sk7_imu_callback, False, type=TIA_SIG_USER_2)])
     print('Waiting for requests')
 
