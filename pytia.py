@@ -579,7 +579,7 @@ def sk7_imu_callback():
     return [random.randint(-1000, 1000) for x in range(5)]
 
 if __name__ == "__main__":
-    server = TiAServer(('127.0.0.1', 9000), TiAConnectionHandler)
+    server = TiAServer(('', 9000), TiAConnectionHandler)
     server.start([TiASignalConfig(5, 100, 1, sk7_imu_callback, True), TiASignalConfig(5, 100, 1, sk7_imu_callback, False, type=TIA_SIG_USER_2)])
     print('Waiting for requests')
 
