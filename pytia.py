@@ -31,12 +31,26 @@ TIA_SIG_USER_4      = 0x00080000        # User 4
 TIA_SIG_UNDEFINED   = 0x00100000        # undefined signal type
 TIA_SIG_EVENT       = 0x00200000        # event 
 
-# Signal names for the user defined streams
 TIA_SIG_NAMES = { \
-    TIA_SIG_USER_1 : 'user_1',        
-    TIA_SIG_USER_2 : 'user_2',        
-    TIA_SIG_USER_3 : 'user_3',        
-    TIA_SIG_USER_4 : 'user_4',        
+        TIA_SIG_EEG:        'eeg',
+        TIA_SIG_EMG:        'emg',
+        TIA_SIG_EOG:        'eog',
+        TIA_SIG_ECG:        'ecg',
+        TIA_SIG_HR:         'hr',
+        TIA_SIG_BP:         'bp',
+        TIA_SIG_BUTTON:     'button',
+        TIA_SIG_JOYSTICK:   'joystick',
+        TIA_SIG_SENSORS:    'sensors',
+        TIA_SIG_NIRS:       'nirs',
+        TIA_SIG_FMRI:       'fmri',
+        TIA_SIG_MOUSE:      'mouse',
+        TIA_SIG_MOUSE_BTN:  'mouse-button',
+        TIA_SIG_USER_1:     'user_1',
+        TIA_SIG_USER_2:     'user_2',
+        TIA_SIG_USER_3:     'user_3',
+        TIA_SIG_USER_4:     'user_4',
+        TIA_SIG_UNDEFINED:  'undefined',
+        TIA_SIG_EVENT:      'event',
 }
 
 # Control message commands
@@ -74,7 +88,7 @@ class TiASignalConfig(object):
     (the number of samples per channel in each outgoing packet) and data type.
     """
 
-    def __init__(self, channels, sample_rate, blocksize, callback, is_master=True, type=TIA_SIG_USER_1):
+    def __init__(self, channels, sample_rate, blocksize, callback, id, is_master=True, type=TIA_SIG_USER_1):
         """ 
         Create a signal. Parameters are:
             
@@ -96,6 +110,10 @@ class TiASignalConfig(object):
                             a blocksize of 2, this method should return a list containing
                             [ch1s1, ch2s2, ch2s1, ch2s2].
 
+            id:             arbitrary object/value that can be used to identify the signal
+                            and/or associate data with it. Whatever is provided here will
+                            be passed as a parameter to the callback method. 
+
             is_master:      indicates if this signal is the 'master' signal. The 'master' 
                             signal sampling rate is the rate at which the server will 
                             poll the set of signal callback methods for new data. Exactly
@@ -111,9 +129,9 @@ class TiASignalConfig(object):
         self.channels = channels
         self.sample_rate = sample_rate
         self.blocksize = blocksize
-
+        self.id = id
         self.signal_flags = type
-        self.type = TIA_SIG_NAMES[type]
+        self.typestr = TIA_SIG_NAMES[type]
         self.master = is_master
         if callback == None:
             raise TiAException("Must provide a valid callback method for every signal")
@@ -134,7 +152,7 @@ class TiASignalConfig(object):
             metainfo += '<masterSignal samplingRate="%d" blockSize="%d"/>\n' % (self.sample_rate, self.blocksize)
 
         metainfo += '<signal type="%s" samplingRate="%d" blockSize="%d" numChannels="%d">\n' \
-                        % (self.type, self.sample_rate, self.blocksize, self.channels)
+                    % (self.typestr, self.sample_rate, self.blocksize, self.channels)
         for i in range(self.channels):
             metainfo += '<channel nr="%d" label="channel%d"/>\n' % (i+1, i+1)
         metainfo += '</signal>\n'
@@ -179,7 +197,7 @@ class TiAServer(ThreadingMixIn, TCPServer):
                 self.master_sample_rate = sig.sample_rate
         
         if num_master != 1:
-            raise TiAException("Must have exactly one 'Master' signal")
+            raise TiAException('Must have exactly one "Master" signal (found %d)' % num_master)
 
         # put the master signal first in the list if it isn't there already
         if not signals[0].master:
@@ -280,7 +298,7 @@ class TiATCPClientHandler(threading.Thread):
                 # concatenate all the raw signal data together
                 raw_data = b''
                 for sig in self.signals:
-                    sig_data = sig.callback()
+                    sig_data = sig.callback(sig.id)
                     raw_data += sig.raw_data.pack(*sig_data)
                     
                 packet = TIA_RAW_HEADER.pack(TIA_RAW_VERSION, packet_size, 
@@ -288,7 +306,7 @@ class TiATCPClientHandler(threading.Thread):
                             timestamp) + var_header_data + raw_data
 
                 self.conn.send(packet)
-                
+
                 # not clear from the spec what the difference is between the 
                 # "Packet ID" and "Connection Packet Number" fields, but don't
                 # think they're particularly important as long as the values
@@ -575,11 +593,12 @@ class TiAClient(object):
         return alldata
 
 
-def sk7_imu_callback():
-    return [random.randint(-1000, 1000) for x in range(5)]
+def sk7_imu_callback(id):
+    return [random.uniform(-1000, 1000) for x in range(3)]
 
 if __name__ == "__main__":
     server = TiAServer(('', 9000), TiAConnectionHandler)
-    server.start([TiASignalConfig(5, 100, 1, sk7_imu_callback, True), TiASignalConfig(5, 100, 1, sk7_imu_callback, False, type=TIA_SIG_USER_2)])
+    # example setup for SK7 IMUs
+    server.start([TiASignalConfig(3, 100, 1, sk7_imu_callback, i, i == 0, 2 ** (i+16)) for i in range(5)])
     print('Waiting for requests')
 
