@@ -212,6 +212,7 @@ class TiAServer(ThreadingMixIn, TCPServer):
             server_target = self.handle_request
             
         t = threading.Thread(target=server_target)    
+        t.daemon = True
         t.start()
         print('TiAServer started on %s:%d' % (self.server_address))
         print('TiAServer configured with %d signals' % len(self.signals))
