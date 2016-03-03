@@ -603,3 +603,11 @@ if __name__ == "__main__":
     server.start([TiASignalConfig(3, 100, 1, sk7_imu_callback, i, i == 0, 2 ** (i+16)) for i in range(5)])
     print('Waiting for requests')
 
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        pass
+
+    print ('Exiting')
+
