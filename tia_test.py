@@ -4,20 +4,6 @@ import pytia
 
 # TODO tidy this up...
 
-finished = False
-def receiver():
-    global finished
-    dsd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-    dsd.connect(('localhost', dport))
-    print('Receiving data...')
-    while not finished:
-        msg = dsd.recv(1000)
-        if len(msg) < 1:
-            break
-        print ('MSG:', msg)
-    print('Finished receiving data')
-    dsd.close()
-
 if __name__ == "__main__":
     c = pytia.TiAClient('localhost', 9000)
     c.connect()
