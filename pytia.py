@@ -418,6 +418,7 @@ class TiAClient(object):
         self.bufsize = 1024
         self.var_header = None
         self.signal_data = []
+        self.last_buffer = b''
 
     def connect(self):
         # create a control connection to the signal server
@@ -544,13 +545,17 @@ class TiAClient(object):
     def get_data(self):
         data = self.data_socket.recv(self.bufsize)
 
+        if len(self.last_buffer) > 0:
+            print("PREPENDING %d leftover bytes" % len(self.last_buffer))
+            data = self.last_buffer + data
+            self.last_buffer = b''
+
         # might have multiple packets in the buffer here. this doesn't
         # handle packets that straddle a buffer boundary, just multiple
         # complete packets in the same buffer
-
         offset = 0
         packets = []
-        while offset < len(data):
+        while (offset + TIA_RAW_HEADER.size) < len(data):
             # strip off header info and unpack data
             fixed_header = TIA_RAW_HEADER.unpack(data[offset:offset+TIA_RAW_HEADER.size])
             if fixed_header[0] != TIA_RAW_VERSION or fixed_header[1] > len(data)-offset:
@@ -562,6 +567,7 @@ class TiAClient(object):
             packets.append(self._process_packet(packet, fixed_header))
             offset += fixed_header[1]
 
+        self.last_buffer = data[offset:]
         return packets
 
     def _process_packet(self, packet, header):
