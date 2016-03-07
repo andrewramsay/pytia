@@ -263,7 +263,7 @@ class TiATCPClientHandler(threading.Thread):
             # wait for the TiA client to connect (the server will have sent
             # it the port to use)
             self.conn, remoteaddr = self.sock.accept()
-            print('ClientHandler: Data connection from %s:%d' % remoteaddr)
+            print('TiATCPClientHandler: Data connection from %s:%d' % remoteaddr)
             
             # set up some network stuff that only needs done once
             fmt = 'h' * len(self.signals)
@@ -291,7 +291,7 @@ class TiATCPClientHandler(threading.Thread):
             while not self.streaming:
                 time.sleep(0.01)
                 
-            print('ClientHandler: Received start command, streaming data...')
+            print('TiATCPClientHandler: Received start command, streaming data...')
 
             # continue until the StopDataTransmission command is received or 
             # the client disconnects
@@ -336,10 +336,7 @@ class TiAConnectionHandler(BaseRequestHandler):
         self.datahandler = None # TODO multiple handlers?
 
         while True:
-            print('>>>>>> BEGIN')
             msg = self.request.recv(256).decode(TIA_ENCODING)
-
-            print('<<<<<< END')
 
             # control messages are multi-line
             msg = msg.split('\n')
@@ -350,7 +347,6 @@ class TiAConnectionHandler(BaseRequestHandler):
                 return
 
             msg_type = msg[1]
-            print('Type "%s"\n' % msg_type)
 
             if msg_type == TIA_CTRL_CHECK_PROTO_VERSION:
                 # TODO check the protocol version
@@ -395,13 +391,11 @@ class TiAConnectionHandler(BaseRequestHandler):
         pass
 
     def _get_data_connection_response(self):
-        print('Creating a TCP client handler on %s' % (self.server.server_address[0]))
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
         # initially bind to port 0 to cause the OS to allocate a free port for us
         sock.bind((self.server.server_address[0], 0))
         # then retrieve the port number that was allocated
         port = sock.getsockname()[1]
-        print('Listening on %s:%d' % (sock.getsockname()))
         sock.listen(1)
         self.datahandler = TiATCPClientHandler(sock, self.server.signals, self.server.start_time)
         resp = TIA_MSG_HEADER + '\nDataConnectionPort:%d\n\n' % port
@@ -546,7 +540,6 @@ class TiAClient(object):
         data = self.data_socket.recv(self.bufsize)
 
         if len(self.last_buffer) > 0:
-            print("PREPENDING %d leftover bytes" % len(self.last_buffer))
             data = self.last_buffer + data
             self.last_buffer = b''
 
@@ -560,7 +553,7 @@ class TiAClient(object):
             fixed_header = TIA_RAW_HEADER.unpack(data[offset:offset+TIA_RAW_HEADER.size])
             if fixed_header[0] != TIA_RAW_VERSION or fixed_header[1] > len(data)-offset:
                 # invalid packet/packet too small
-                print('Invalid packet %d==%d, %d > %d' % (fixed_header[0], TIA_RAW_VERSION, fixed_header[1], len(data)-offset))
+                print('TiAClient: WARNING, invalid packet %d==%d, %d > %d' % (fixed_header[0], TIA_RAW_VERSION, fixed_header[1], len(data)-offset))
                 return packets
 
             packet = data[offset:offset+fixed_header[1]]
