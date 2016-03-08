@@ -336,7 +336,7 @@ class TiAConnectionHandler(BaseRequestHandler):
         self.datahandler = None # TODO multiple handlers?
 
         while True:
-            msg = self.request.recv(256).decode(TIA_ENCODING)
+            msg = self.request.recv(4096).decode(TIA_ENCODING)
 
             # control messages are multi-line
             msg = msg.split('\n')
@@ -369,13 +369,13 @@ class TiAConnectionHandler(BaseRequestHandler):
                 self.datahandler.start() 
             elif msg_type == TIA_CTRL_START_DATA_TRANSMISSION:
                 if self.datahandler == None:
-                    self.request.sendall(self._get_data_connection_response('Must send GetDataConnection message first'))
+                    self.request.sendall(self._get_error_response('Must send GetDataConnection message first'))
                 else:
                     self.request.sendall(TIA_OK_MSG)
                     self.datahandler.streaming = True # begin streaming data
             elif msg_type == TIA_CTRL_STOP_DATA_TRANSMISSION:
                 if self.datahandler == None:
-                    self.request.sendall(self._get_data_connection_response('No existing data connection!'))
+                    self.request.sendall(self._get_error_response('No existing data connection!'))
                 else:
                     self.request.sendall(TIA_OK_MSG)
                     self.datahandler.finished = True
@@ -440,7 +440,9 @@ class TiAClient(object):
             return (False, [])
 
         self.ctrl_socket.send(msg.encode(TIA_ENCODING))
-        resp = self.ctrl_socket.recv(1024).decode(TIA_ENCODING)
+        # TODO this shouldn't be a fixed buffer size as the message can be
+        # quite big in the case of the GetMetaInfo command with multiple signals
+        resp = self.ctrl_socket.recv(4096).decode(TIA_ENCODING)
         resp = resp.split('\n')
         if not resp[0].startswith(TIA_MSG_HEADER):
             return (False, [])
@@ -469,9 +471,6 @@ class TiAClient(object):
         # things the right way...
 
         return self._is_ok_response(resp)
-
-    def cmd_get_data_connection_udp(self):
-        return self._cmd_get_data_connection('UDP')
 
     def cmd_get_data_connection_tcp(self):
         return self._cmd_get_data_connection('TCP')
@@ -511,10 +510,6 @@ class TiAClient(object):
     def start_streaming_data_tcp(self, server_address, data_port):
         return self._start_streaming_data(server_address, data_port, 'TCP')
 
-    def start_streaming_data_udp(self, server_address, data_port):
-        # TODO
-        pass
-
     def _start_streaming_data(self, server_address, data_port, proto):
         if proto != 'TCP':
             raise TiAException('Protocol "%s" not supported' % proto)
@@ -553,6 +548,8 @@ class TiAClient(object):
             fixed_header = TIA_RAW_HEADER.unpack(data[offset:offset+TIA_RAW_HEADER.size])
             if fixed_header[0] != TIA_RAW_VERSION or fixed_header[1] > len(data)-offset:
                 # invalid packet/packet too small
+                # TODO in case there's actually a valid header, could just read
+                # the rest of the packet here since we will know the size
                 print('TiAClient: WARNING, invalid packet %d==%d, %d > %d' % (fixed_header[0], TIA_RAW_VERSION, fixed_header[1], len(data)-offset))
                 return packets
 
