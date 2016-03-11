@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
-import struct, socket, threading, time, random, sys
+import struct, socket, threading, time, random, sys, logging
 
 if sys.version_info > (3,):
     from socketserver import BaseRequestHandler, ThreadingMixIn, TCPServer
     long = int
 else:
     from SocketServer import BaseRequestHandler, ThreadingMixIn, TCPServer
+
+pytia_logger = logging.getLogger(__name__)
+handler = logging.StreamHandler(sys.stdout)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+pytia_logger.addHandler(handler)
+pytia_logger.setLevel(logging.INFO)
 
 TIA_ENCODING = 'utf-8'
 
@@ -45,6 +51,7 @@ TIA_SIG_NAMES = { \
         TIA_SIG_FMRI:       'fmri',
         TIA_SIG_MOUSE:      'mouse',
         TIA_SIG_MOUSE_BTN:  'mouse-button',
+        
         TIA_SIG_USER_1:     'user_1',
         TIA_SIG_USER_2:     'user_2',
         TIA_SIG_USER_3:     'user_3',
@@ -206,6 +213,7 @@ class TiAServer(ThreadingMixIn, TCPServer):
         self.signals = signals
         self.subject = (subj_id, subj_fname, subj_lname)
         self.start_time = time.time()
+        self.manager = None
         server_target = self.serve_forever
 
         if single_shot:
@@ -214,33 +222,69 @@ class TiAServer(ThreadingMixIn, TCPServer):
         t = threading.Thread(target=server_target)    
         t.daemon = True
         t.start()
-        print('TiAServer started on %s:%d' % (self.server_address))
-        print('TiAServer configured with %d signals' % len(self.signals))
+        pytia_logger.info('TiAServer started on %s:%d' % (self.server_address))
+        pytia_logger.info('TiAServer configured with %d signals' % len(self.signals))
+
+class TiAClientManager(threading.Thread):
+    """
+    An instance of this class is spawned by the server when the first client
+    connects. It is responsible for polling all defined sensors and returning
+    the accumulated data to the client handlers for streaming.
+    """
+
+    def __init__(self, signals):
+        super(TiAClientManager, self).__init__()
+
+        self.finished = False
+        self.signals = signals
+        self.clients = {}
+        self.daemon = True
+
+    def add_client(self, id, client):
+        if self.clients.has_key(id):
+            raise TiAException('Duplicate client ID')
+
+        self.clients[id] = client
+        pytia_logger.info('New client added, %d clients total' % len(self.clients))
+
+    def remove_client(self, id):
+        del self.clients[id]
+        pytia_logger.info('Client removed, %d clients total' % len(self.clients))
+        
+    def run(self):
+        pytia_logger.info('TiAClientManager: started')
+        while not self.finished:
+            raw_data = b''
+            for sig in self.signals:
+                sig_data = sig.callback(sig.id)
+                raw_data += sig.raw_data.pack(*sig_data)
+
+            all_data = raw_data
+
+            # send data through all the clients
+            for id, client in self.clients.items():
+                client.send_data(all_data)
+
+            # polling rate controlled by master signal 
+            time.sleep(1.0/self.signals[0].sample_rate)
     
-# an instance of this class is created each time a client requests
-# a data connection. the socket passed in is already bound and listening
-# for connections. it waits for an incoming connection from the client,
-# then pauses until the server receives a 'StartDataTransmission' command.
-# After that it starts streaming data until told to stop. 
-class TiATCPClientHandler(threading.Thread):
+class TiATCPClientHandler(object):
     """
     Instances of this class are created each time a client requests a data 
-    connection from the server. Each encapsulates a thread that polls the 
-    sensor callbacks defined by the signal data, and sends TiA packets to the
-    connected client. 
-
-    TODO: should really only poll the sensors in one place, not in every
-    instance of this class (only a problem if multiple clients)
+    connection from the server. Each instance wraps the sockets that the client
+    will use to establish the data connection to the server and transfer data,
+    and they also set up the packet headers required to format the outgoing
+    data. The TiAClientManager class is responsible for actually polling the
+    sensors and relaying the results to each client in turn for transmission. 
     """
 
-    def __init__(self, sock, signals, server_start_time):
+    def __init__(self, sock, signals, manager, server_start_time):
         """
         Parameters:
             
             sock:       the TCP socket created by the server in response to the
-                        client request. The socket is passed in in the pre-accept()
-                        state, ready to await the incoming connection once the 
-                        accept() method is called. 
+                        client request. The socket is passed in in the pre-listen()
+                        state.
 
             server_start_time:      timestamp giving server start time. Used to 
                                     generate timestamps for outgoing packets, although
@@ -249,85 +293,74 @@ class TiATCPClientHandler(threading.Thread):
         super(TiATCPClientHandler, self).__init__()
         self.allow_reuse_address = True # equivalent to setting SO_REUSEADDR
         self.sock = sock
-        self.finished = False       # indicates end of the client connection
-        self.streaming = False      # indicates current state of data streaming
         self.signals = signals
+        self.manager = manager
         self.server_start_time = server_start_time
+        self.dataconn = None
+        self.daemon = True
 
-    def run(self):
-        """
-        Starts the thread to receive the incoming connection from the client, 
-        and then to begin streaming data back to it until told to stop.
-        """
-        try:
-            # wait for the TiA client to connect (the server will have sent
-            # it the port to use)
-            self.conn, remoteaddr = self.sock.accept()
-            print('TiATCPClientHandler: Data connection from %s:%d' % remoteaddr)
-            
-            # set up some network stuff that only needs done once
-            fmt = 'h' * len(self.signals)
-            # variable header struct should be configured to contain 2 arrays of 
-            # 16-bit integers (the number of channels in each signal in the first
-            # and the blocksize of each signal in the second)
-            var_header = struct.Struct('<' + fmt + fmt)
-            sig_channels = [x.channels for x in self.signals]
-            sig_blocksizes = [x.blocksize for x in self.signals]
-            var_header_data = var_header.pack(*(sig_channels + sig_blocksizes))
+        # set up some network stuff that only needs done once
+        fmt = 'h' * len(self.signals)
+        # variable header struct should be configured to contain 2 arrays of 
+        # 16-bit integers (the number of channels in each signal in the first
+        # and the blocksize of each signal in the second)
+        var_header = struct.Struct('<' + fmt + fmt)
+        sig_channels = [x.channels for x in self.signals]
+        sig_blocksizes = [x.blocksize for x in self.signals]
+        self.var_header_data = var_header.pack(*(sig_channels + sig_blocksizes))
 
-            # these fields have to be updated in the header for every packet
-            packet_id, conn_packet_number, timestamp = 0, 0, 0
-            # this indicates what type of data is being streamed (from predefined list above)
-            signal_type_flags = 0
-            total_raw_data_size = 0
-            for s in self.signals:
-                signal_type_flags |= s.signal_flags
-                total_raw_data_size += s.raw_data.size
+        # this indicates what type of data is being streamed (from predefined list above)
+        self.signal_type_flags = 0
+        total_raw_data_size = 0
+        for s in self.signals:
+            self.signal_type_flags |= s.signal_flags
+            total_raw_data_size += s.raw_data.size
+
+        # these fields have to be updated in the header for every packet
+        self.packet_id, self.conn_packet_number, self.timestamp = 0, 0, 0
                 
-            # packet size: fixed header + variable header + data
-            packet_size = TIA_RAW_HEADER.size + len(var_header_data) + total_raw_data_size
+        # packet size: fixed header + variable header + data
+        self.packet_size = TIA_RAW_HEADER.size + len(self.var_header_data) + total_raw_data_size
 
-            # now wait until request to start transmission arrives from the client
-            while not self.streaming:
-                time.sleep(0.01)
-                
-            print('TiATCPClientHandler: Received start command, streaming data...')
+        self.sock.listen(1)
 
-            # continue until the StopDataTransmission command is received or 
-            # the client disconnects
-            while not self.finished:
-                # concatenate all the raw signal data together
-                raw_data = b''
-                for sig in self.signals:
-                    sig_data = sig.callback(sig.id)
-                    raw_data += sig.raw_data.pack(*sig_data)
-                    
-                packet = TIA_RAW_HEADER.pack(TIA_RAW_VERSION, packet_size, 
-                            signal_type_flags, packet_id, conn_packet_number,
-                            timestamp) + var_header_data + raw_data
+        # socket now ready to call accept, which will be done when send_data is
+        # called. make the socket non-blocking so that doesn't block the sensor
+        # polling thread...
+        self.sock.setblocking(0)
 
-                self.conn.send(packet)
-
-                # not clear from the spec what the difference is between the 
-                # "Packet ID" and "Connection Packet Number" fields, but don't
-                # think they're particularly important as long as the values
-                # get incremented predictably...
-                packet_id += 1
-                conn_packet_number += 1
-                # this is supposed to be the number of microseconds since the 
-                # server started (although it's ignored by the BBT architecture
-                # which generates its own timestamps)
-                timestamp = long((time.time() - self.server_start_time) * 1000000)
-
-                time.sleep(1.0/self.signals[0].sample_rate)
-
-            self.conn.close()
-        except Exception as e:
-            print('Error in TCP handler:', e)
-            import traceback
-            print(traceback.format_exc())
-
+    def close(self):
+        if self.dataconn:
+            self.dataconn.close()
         self.sock.close()
+
+    def send_data(self, rawdata):
+        if not self.dataconn:
+            try:
+                pytia_logger.debug('TiATCPClientHandler: calling accept()')
+                # non-blocking call to accept!
+                self.dataconn, remoteaddr = self.sock.accept()
+                pytia_logger.info('TiATCPClientHandler: Data connection from %s:%d' % remoteaddr)
+            except socket.error:
+                pass
+            return 
+
+        packet = TIA_RAW_HEADER.pack(TIA_RAW_VERSION, self.packet_size, 
+                            self.signal_type_flags, self.packet_id, self.conn_packet_number,
+                            self.timestamp) + self.var_header_data + rawdata
+
+        self.dataconn.send(packet)
+
+        # not clear from the spec what the difference is between the 
+        # "Packet ID" and "Connection Packet Number" fields, but don't
+        # think they're particularly important as long as the values
+        # get incremented predictably...
+        self.packet_id += 1
+        self.conn_packet_number += 1
+        # this is supposed to be the number of microseconds since the 
+        # server started (although it's ignored by the BBT architecture
+        # which generates its own timestamps)
+        self.timestamp = long((time.time() - self.server_start_time) * 1000000)
 
 # Handler class for the TCPServer instance
 class TiAConnectionHandler(BaseRequestHandler):
@@ -347,6 +380,7 @@ class TiAConnectionHandler(BaseRequestHandler):
                 return
 
             msg_type = msg[1]
+            pytia_logger.debug('Received command:' + msg[1])
 
             if msg_type == TIA_CTRL_CHECK_PROTO_VERSION:
                 # TODO check the protocol version
@@ -365,20 +399,22 @@ class TiAConnectionHandler(BaseRequestHandler):
             elif msg_type.startswith(TIA_CTRL_GET_DATA_CONNECTION):
                 # client has requested a data connection, respond with a port number
                 # and set up a handler object to deal with the incoming connection
-                self.request.sendall(self._get_data_connection_response())
-                self.datahandler.start() 
+                port, self.datahandler = self._create_data_handler()
+                #self.datahandler.start() 
+                self.request.sendall(self._get_data_connection_response(port))
+                pytia_logger.debug('Starting data handler')
             elif msg_type == TIA_CTRL_START_DATA_TRANSMISSION:
                 if self.datahandler == None:
                     self.request.sendall(self._get_error_response('Must send GetDataConnection message first'))
                 else:
                     self.request.sendall(TIA_OK_MSG)
-                    self.datahandler.streaming = True # begin streaming data
+                    pytia_logger.debug('Begin streaming')
             elif msg_type == TIA_CTRL_STOP_DATA_TRANSMISSION:
                 if self.datahandler == None:
                     self.request.sendall(self._get_error_response('No existing data connection!'))
                 else:
                     self.request.sendall(TIA_OK_MSG)
-                    self.datahandler.finished = True
+                    self.server.manager.remove_client(self.datahandler.sock.getsockname()[1])
             else:
                 self.request.sendall(self._get_error_response('Unknown message type "%s"' % msg_type))
                 return
@@ -390,17 +426,29 @@ class TiAConnectionHandler(BaseRequestHandler):
     def _get_signal_info(self):
         pass
 
-    def _get_data_connection_response(self):
+    def _create_data_handler(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP)
         # initially bind to port 0 to cause the OS to allocate a free port for us
         sock.bind((self.server.server_address[0], 0))
         # then retrieve the port number that was allocated
         port = sock.getsockname()[1]
-        sock.listen(1)
-        self.datahandler = TiATCPClientHandler(sock, self.server.signals, self.server.start_time)
+        if not self.server.manager:
+            # create an manageruisition object to read the sensors
+            pytia_logger.debug('Creating sensor managerusition thread')
+            self.server.manager = TiAClientManager(self.server.signals)
+            self.server.manager.start()
+        else:
+            pytia_logger.debug('Server manageruisition thread already exists')
+
+        # create a new client handler 
+        datahandler = TiATCPClientHandler(sock, self.server.signals, self.server.manager, self.server.start_time)
+        self.server.manager.add_client(port, datahandler)
+
+        return port, datahandler
+
+    def _get_data_connection_response(self, port):
         resp = TIA_MSG_HEADER + '\nDataConnectionPort:%d\n\n' % port
         return resp.encode(TIA_ENCODING)
-
 
 # this is probably only useful for testing the server class
 class TiAClient(object):
@@ -548,9 +596,9 @@ class TiAClient(object):
             fixed_header = TIA_RAW_HEADER.unpack(data[offset:offset+TIA_RAW_HEADER.size])
             if fixed_header[0] != TIA_RAW_VERSION or fixed_header[1] > len(data)-offset:
                 # invalid packet/packet too small
-                # TODO in case there's actually a valid header, could just read
-                # the rest of the packet here since we will know the size
-                print('TiAClient: WARNING, invalid packet %d==%d, %d > %d' % (fixed_header[0], TIA_RAW_VERSION, fixed_header[1], len(data)-offset))
+                # read the rest of the packet here since we know the expected size
+                remainder = self.data_socket.recv(fixed_header[1]-(len(data)-offset))
+                packets.append(self._process_packet(data[offset:] + remainder, fixed_header))
                 return packets
 
             packet = data[offset:offset+fixed_header[1]]
@@ -596,7 +644,9 @@ def sk7_imu_callback(id):
 if __name__ == "__main__":
     server = TiAServer(('', 9000), TiAConnectionHandler)
     # example setup for SK7 IMUs
-    server.start([TiASignalConfig(3, 100, 1, sk7_imu_callback, i, i == 0, 2 ** (i+16)) for i in range(5)])
+    types = [TIA_SIG_SENSORS, TIA_SIG_USER_1, TIA_SIG_USER_2, TIA_SIG_USER_3, TIA_SIG_USER_4]
+    server.start([TiASignalConfig(3, 100, 1, sk7_imu_callback, i, i == 0, types[i]) for i in range(5)])
+    print('Signal types:', types)
     print('Waiting for requests')
 
     try:
