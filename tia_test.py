@@ -10,13 +10,13 @@ def data_callback(signalid):
 if __name__ == "__main__":
     # create a server listening on port 9000 and configured with a 3 channel,
     # 100Hz signal (containing random data)
-    server = pytia.TiAServer(('', 9000), pytia.TiAConnectionHandler)
-    server.start([pytia.TiASignalConfig(3, 100, 1, data_callback, 'signalid', pytia.TIA_SIG_USER_1)])
+    #server = pytia.TiAServer(('', 9000), pytia.TiAConnectionHandler)
+    #server.start([pytia.TiASignalConfig(3, 100, 1, data_callback, 'signalid', pytia.TIA_SIG_USER_1)])
 
     # (server is now running in a background thread)
 
     # create a client and connect to the server
-    client = pytia.TiAClient('localhost', 9000)
+    client = pytia.TiAClient('127.0.0.1', 9000)
     if not client.connect():
         print('Failed to connect to server')
         sys.exit(-1)
@@ -36,30 +36,37 @@ if __name__ == "__main__":
     # the server will respond with a port number that the client should connect
     # to in order to start streaming data.
     status, dport = client.cmd_get_data_connection_tcp()
+    print(status, dport)
     if not status:
         print('Failed to get data connection')
         client.disconnect()
         sys.exit(-1)
 
     # the client connects and requests that the server begin streaming data
-    if not client.start_streaming_data_tcp('localhost', dport):
+    print('Connecting to server on port %d...' % dport)
+    if not client.start_streaming_data_tcp('127.0.0.1', dport):
         print('Failed to start streaming data')
         client.disconnect()
         sys.exit(-1)
 
     # once connected, the server continues streaming data until told to stop
-    for i in range(10):
-        # calling the get_data function returns the most recent data received
-        # from the server. depending on the buffer size used (TODO?) there may
-        # be multiple TiA packets returned here.
-        packets = client.get_data()
-        print('----------')
-        print('Retrieved %d packets' % (len(packets)))
-        if len(packets) > 0:
-            print('%d signals in packet' % (len(packets[0])))
+    done = False
+    while not done:
+        try:
+            # calling the get_data function returns the most recent data received
+            # from the server. depending on the buffer size used (TODO?) there may
+            # be multiple TiA packets returned here.
+            packets = client.get_data()
+            print('----------')
+            print('Retrieved %d packets' % (len(packets)))
+            if len(packets) > 0:
+                print('%d signals in packet' % (len(packets[0])))
 
-            for i in range(len(packets[0])):
-                print('Signal %d:' % (i+1), packets[0][i])
+                for i in range(len(packets[0])):
+                    print('Signal %d:' % (i+1), packets[0][i])
+            time.sleep(0.1)
+        except KeyboardInterrupt:
+            done = True
 
     # the client should tell the server to stop streaming before 
     # disconnecting itself
