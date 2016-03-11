@@ -95,7 +95,7 @@ class TiASignalConfig(object):
     (the number of samples per channel in each outgoing packet) and data type.
     """
 
-    def __init__(self, channels, sample_rate, blocksize, callback, id, is_master=True, type=TIA_SIG_USER_1):
+    def __init__(self, channels, sample_rate, blocksize, callback, id, is_master=True, sigtype=TIA_SIG_USER_1):
         """ 
         Create a signal. Parameters are:
             
@@ -127,7 +127,7 @@ class TiASignalConfig(object):
                             one signal must be set as the master signal within each instance
                             of a TiAServer.
 
-            type:           sets the TiA type of the signal. This should be one of the 
+            sigtype:        sets the TiA type of the signal. This should be one of the 
                             TIA_SIG_NAME_USER_ constants. If you have multiple signals,
                             you must use a different type for every signal. The default
                             value is fine for a single signal. 
@@ -137,8 +137,8 @@ class TiASignalConfig(object):
         self.sample_rate = sample_rate
         self.blocksize = blocksize
         self.id = id
-        self.signal_flags = type
-        self.typestr = TIA_SIG_NAMES[type]
+        self.signal_flags = sigtype
+        self.typestr = TIA_SIG_NAMES[sigtype]
         self.master = is_master
         if callback == None:
             raise TiAException("Must provide a valid callback method for every signal")
@@ -214,6 +214,7 @@ class TiAServer(ThreadingMixIn, TCPServer):
         self.subject = (subj_id, subj_fname, subj_lname)
         self.start_time = time.time()
         self.manager = None
+        self.allow_reuse_address = True # equivalent to setting SO_REUSEADDR
         server_target = self.serve_forever
 
         if single_shot:
@@ -291,7 +292,6 @@ class TiATCPClientHandler(object):
                                     the BBT architecture discards these.
         """
         super(TiATCPClientHandler, self).__init__()
-        self.allow_reuse_address = True # equivalent to setting SO_REUSEADDR
         self.sock = sock
         self.signals = signals
         self.manager = manager
@@ -645,7 +645,7 @@ if __name__ == "__main__":
     server = TiAServer(('', 9000), TiAConnectionHandler)
     # example setup for SK7 IMUs
     types = [TIA_SIG_SENSORS, TIA_SIG_USER_1, TIA_SIG_USER_2, TIA_SIG_USER_3, TIA_SIG_USER_4]
-    server.start([TiASignalConfig(3, 100, 1, sk7_imu_callback, i, i == 0, types[i]) for i in range(5)])
+    server.start([TiASignalConfig(channels=3, sample_rate=100, blocksize=1, callback=sk7_imu_callback, id=i, is_master=i == 0, sigtype=types[i]) for i in range(5)])
     print('Signal types:', types)
     print('Waiting for requests')
 
