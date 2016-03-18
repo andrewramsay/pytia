@@ -450,6 +450,19 @@ class TiAConnectionHandler(BaseRequestHandler):
         resp = TIA_MSG_HEADER + '\nDataConnectionPort:%d\n\n' % port
         return resp.encode(TIA_ENCODING)
 
+class TiAPacket(object):
+
+    def __init__(self):
+        self.signals = []
+        self.blocksizes = []
+        self.channels = []
+
+    def get_channel(self, sindex, cindex):
+        channels = self.channels[sindex]
+        blocksize = self.blocksizes[sindex]
+        data = self.signals[sindex]
+        return data[cindex * channels:(cindex*channels)+blocksize]
+
 # this is probably only useful for testing the server class
 class TiAClient(object):
 
@@ -457,7 +470,7 @@ class TiAClient(object):
         self.address = (server_address, server_port)
         self.ctrl_socket = None
         self.data_socket = None
-        self.bufsize = 1024
+        self.bufsize = 2048
         self.var_header = None
         self.signal_data = []
         self.last_buffer = b''
@@ -620,22 +633,22 @@ class TiAClient(object):
 
         var_header_data = self.var_header.unpack(packet[TIA_RAW_HEADER.size:TIA_RAW_HEADER.size+self.var_header.size])
 
+        tiapacket = TiAPacket()
+        tiapacket.channels = var_header_data[:num_signals]
+        tiapacket.blocksizes = var_header_data[num_signals:num_signals*2]
+
         # now retrieve the samples from each signal. when blocksize > 1, the
         # samples are ordered like this (blocksize=4):
         # ch1s1, ch1s2, ch1s3, ch1s4, ch2s1, ch2s2, ...
-        alldata = []
-        if len(self.signal_data) == 0:
-            for i in range(num_signals):
-                channels = var_header_data[i]
-                blocksize = var_header_data[num_signals+i]
-                self.signal_data.append(struct.Struct('<' + ('f' * channels * blocksize)))
-
         index = TIA_RAW_HEADER.size + self.var_header.size
-        for s in self.signal_data:
-            alldata.append(s.unpack(packet[index:index+s.size]))
-            index += s.size
+        for i in range(num_signals):
+            channels = var_header_data[i]
+            blocksize = var_header_data[num_signals+i]
+            sz = channels * blocksize
+            tiapacket.signals.append(struct.unpack('<' + ('f' * sz), packet[index:index+(sz*4)]))
+            index += sz*4
 
-        return alldata
+        return tiapacket 
 
 
 def sk7_imu_callback(id):
