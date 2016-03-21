@@ -459,6 +459,9 @@ class TiAPacket(object):
         self.signals = []
         self.blocksizes = []
         self.channels = []
+        self.packet_number = -1
+        self.timestamp = -1
+        self.packet_id = -1
 
     def get_channel(self, sindex, cindex):
         channels = self.channels[sindex]
@@ -642,6 +645,9 @@ class TiAClient(object):
         tiapacket = TiAPacket()
         tiapacket.channels = var_header_data[:num_signals]
         tiapacket.blocksizes = var_header_data[num_signals:num_signals*2]
+        tiapacket.packet_id = header[3]
+        tiapacket.packet_number = header[4]
+        tiapacket.timestamp = header[5]
 
         # now retrieve the samples from each signal. when blocksize > 1, the
         # samples are ordered like this (blocksize=4):
