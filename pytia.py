@@ -349,7 +349,10 @@ class TiATCPClientHandler(object):
                             self.signal_type_flags, self.packet_id, self.conn_packet_number,
                             self.timestamp) + self.var_header_data + rawdata
 
-        self.dataconn.send(packet)
+        try:
+            self.dataconn.send(packet)
+        except:
+            pytia_logger.warn('TiATCPClientHandler: failed to send a data packet')
 
         # not clear from the spec what the difference is between the 
         # "Packet ID" and "Connection Packet Number" fields, but don't
@@ -593,6 +596,9 @@ class TiAClient(object):
         return True
 
     def get_data(self):
+        if not self.data_socket:
+            return []
+        
         data = self.data_socket.recv(self.bufsize)
 
         if len(self.last_buffer) > 0:
