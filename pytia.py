@@ -249,6 +249,7 @@ class TiAClientManager(threading.Thread):
         pytia_logger.info('New client added, %d clients total' % len(self.clients))
 
     def remove_client(self, id):
+        self.clients[id].close()
         del self.clients[id]
         pytia_logger.info('Client removed, %d clients total' % len(self.clients))
         
@@ -263,8 +264,15 @@ class TiAClientManager(threading.Thread):
             all_data = raw_data
 
             # send data through all the clients
+            to_remove = []
             for id, client in self.clients.items():
                 client.send_data(all_data)
+                if client.send_errors > 100:
+                    to_remove.append(id)
+
+            for id in to_remove:
+                pytia_logger.warn('Removing client due to too many send errors (%d)' % client.send_errors)
+                self.remove_client(id)
 
             # polling rate controlled by master signal 
             time.sleep(1.0/self.signals[0].sample_rate)
@@ -298,6 +306,7 @@ class TiATCPClientHandler(object):
         self.server_start_time = server_start_time
         self.dataconn = None
         self.daemon = True
+        self.send_errors = 0
 
         # set up some network stuff that only needs done once
         fmt = 'h' * len(self.signals)
@@ -353,6 +362,7 @@ class TiATCPClientHandler(object):
             self.dataconn.send(packet)
         except:
             pytia_logger.warn('TiATCPClientHandler: failed to send a data packet')
+            self.send_errors += 1
 
         # not clear from the spec what the difference is between the 
         # "Packet ID" and "Connection Packet Number" fields, but don't
@@ -454,7 +464,10 @@ class TiAConnectionHandler(BaseRequestHandler):
         return resp.encode(TIA_ENCODING)
 
 class TiAPacket(object):
-
+    """
+    Instances of this class are used by the TiAClient class to represent the
+    incoming data packet from a TiAServer. 
+    """
     def __init__(self):
         self.signals = []
         self.blocksizes = []
@@ -463,11 +476,33 @@ class TiAPacket(object):
         self.timestamp = -1
         self.packet_id = -1
 
-    def get_channel(self, sindex, cindex):
-        channels = self.channels[sindex]
-        blocksize = self.blocksizes[sindex]
+    def get_channel(self, sindex, cindex=-1):
+        """
+        This method provides a convenient way to extract the samples for a
+        particular signal and optionally channel from the packet. 
+
+        Parameters:
+
+            sindex:         the signal index in the packet, zero-based
+
+            cindex:         the channel index in the signal, zero-based. If
+                            set to -1, all data from the selected signal is
+                            returned in a single list.
+
+        Returns either a full set of signal data (cindex == -1) or the selected
+        subset of channel data from the full set of signal data.
+        """
+        channels_in_signal = self.channels[sindex]
+        blocksize_of_signal = self.blocksizes[sindex]
         data = self.signals[sindex]
-        return data[cindex * channels:(cindex*channels)+blocksize]
+        
+        if cindex == -1:
+            return data
+        
+        if cindex >= channels_in_signal:
+            return []
+
+        return data[cindex * blocksize_of_signal:(cindex*blocksize_of_signal)+blocksize_of_signal]
 
 # this is probably only useful for testing the server class
 class TiAClient(object):
@@ -643,8 +678,11 @@ class TiAClient(object):
         var_header_data = self.var_header.unpack(packet[TIA_RAW_HEADER.size:TIA_RAW_HEADER.size+self.var_header.size])
 
         tiapacket = TiAPacket()
+        # number of channels in each of the signals in the packet
         tiapacket.channels = var_header_data[:num_signals]
+        # number of samples in each channel of each signal in the packet
         tiapacket.blocksizes = var_header_data[num_signals:num_signals*2]
+        # packet metadata fields
         tiapacket.packet_id = header[3]
         tiapacket.packet_number = header[4]
         tiapacket.timestamp = header[5]
@@ -654,8 +692,12 @@ class TiAClient(object):
         # ch1s1, ch1s2, ch1s3, ch1s4, ch2s1, ch2s2, ...
         index = TIA_RAW_HEADER.size + self.var_header.size
         for i in range(num_signals):
+            # get number of channels in the signal and the 
+            # number of samples in each channel
             channels = var_header_data[i]
             blocksize = var_header_data[num_signals+i]
+            # extract the chunk of raw signal values corresponding to 
+            # the full set of channels for this signal and add to packet
             sz = channels * blocksize
             tiapacket.signals.append(struct.unpack('<' + ('f' * sz), packet[index:index+(sz*4)]))
             index += sz*4
