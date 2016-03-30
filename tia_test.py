@@ -60,13 +60,21 @@ if __name__ == "__main__":
             print('----------')
             print('Retrieved %d packets' % (len(packets)))
             if len(packets) > 0:
+                packet = packets[0]
                 print('Dumping first packet info...')
-                print('%d signals in packet' % (len(packets[0].signals)))
-                print('Channel counts: ', packets[0].channels)
-                print('Block sizes: ', packets[0].blocksizes)
-                print('1st signal data [%d channels]' % packets[0].channels[0])
-                for i in range(packets[0].channels[0]):
-                    print('   Channel %d:' % i, packets[0].get_channel(0, i))
+                print('Packet metadata: ', packet.timestamp, packet.packet_id, packet.packet_number)
+                print('%d signals in packet' % (len(packet.signals)))
+                print('Channel counts: ', packet.channels)
+                print('Block sizes: ', packet.blocksizes)
+                # accessing data selectively by channel
+                for i in range(packet.channels[0]):
+                    print('1st signal data [channel %d/%d]' % (i, packet.channels[0])),
+                    print(packet.get_channel(0, i))
+                # accessing all signal data in one go
+                print('1st signal data [all]'),
+                print(packet.get_channel(0))
+                #for i in range(packet.channels[0]):
+                #    print('   Channel %d:' % i, packet.get_channel(0, i))
             time.sleep(0.1)
         except KeyboardInterrupt:
             done = True
