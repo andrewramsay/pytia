@@ -504,9 +504,13 @@ class TiAPacket(object):
 
         return data[cindex * blocksize_of_signal:(cindex*blocksize_of_signal)+blocksize_of_signal]
 
-# this is probably only useful for testing the server class
 class TiAClient(object):
-
+    """
+    TiA clients connect to TiAServer instances and request the server to begin
+    streaming data back to them. This class manages the control connection to
+    the server and the additional connection that the data is streamed over, and
+    provides methods to access the incoming data.
+    """
     def __init__(self, server_address, server_port):
         self.address = (server_address, server_port)
         self.ctrl_socket = None
