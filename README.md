@@ -67,7 +67,7 @@ packets = client.get_data()
 #   - packet.channels (a list of the number of channels in each signal)
 #   - packet.packet_number (sequence number)
 #   - packet.timestamp (timestamp set on transmission)
-#   - packet.pakcet_id (currently set to the same as sequence number)
+#   - packet.packet_id (currently set to the same as sequence number)
 
 # example of extracting some data from a packet
 if len(packets) > 0:
