@@ -69,12 +69,22 @@ packets = client.get_data()
 #   - packet.timestamp (timestamp set on transmission)
 #   - packet.pakcet_id (currently set to the same as sequence number)
 
-# display info about packets and signals (all packets from the same server
-# should contain the same number of signals)
-print('Received %d packets' % len(packets))
-for i, p in enumerate(packets):
-    print('Packet %d contains %d signals' % (i, len(packets[i])))
-    print('Values of signals: ', packets[i])
+# example of extracting some data from a packet
+if len(packets) > 0:
+    packet = packets[0]
+    
+    print('Packet contains %d signals' % (len(packet.signals)))
+    print('Number/timestamp/ID: ', packet.packet_number, packet.timestamp, packet.packet_id)
+    print('Channel counts: ', packet.channels)
+
+    # access some data by channel
+    data = packet.get_channel(0, 1) # channel 1 from signal 0   
+    print('Signal 0/channel 1 = ', data)
+
+    # or just get all the data from a selected signal
+    data = packet.get_channel(0)
+    print('Signal 0 = ', data)
+
 
 # disconnect from the server when done streaming
 client.stop_streaming_data()
