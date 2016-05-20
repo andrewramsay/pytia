@@ -61,6 +61,14 @@ if not client.start_streaming_data_tcp(server_address, dport):
 # signals the server is sending. 
 packets = client.get_data()
 
+# each packet is an instance of TiAPacket. It contains:
+#   - packet.signals (a list of the data for each signal in the packet)
+#   - packet.blocksizes (a list of the block sizes for each signal)
+#   - packet.channels (a list of the number of channels in each signal)
+#   - packet.packet_number (sequence number)
+#   - packet.timestamp (timestamp set on transmission)
+#   - packet.pakcet_id (currently set to the same as sequence number)
+
 # display info about packets and signals (all packets from the same server
 # should contain the same number of signals)
 print('Received %d packets' % len(packets))
