@@ -8,13 +8,6 @@ def data_callback(signalid):
     return [random.uniform(-1000, 1000) for x in range(3)]
 
 if __name__ == "__main__":
-    # create a server listening on port 9000 and configured with a 3 channel,
-    # 100Hz signal (containing random data)
-    #server = pytia.TiAServer(('', 9000), pytia.TiAConnectionHandler)
-    #server.start([pytia.TiASignalConfig(3, 100, 1, data_callback, 'signalid', pytia.TIA_SIG_USER_1)])
-
-    # (server is now running in a background thread)
-
     # create a client and connect to the server
     client = pytia.TiAClient('127.0.0.1', 9000)
     if not client.connect():
