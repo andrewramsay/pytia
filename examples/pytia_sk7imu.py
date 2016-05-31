@@ -25,13 +25,9 @@ if __name__ == "__main__":
         print('Usage: pytia_sk7imu.py <port number>')
         sys.exit(0)
 
-    try:
-        address = int(sys.argv[1])
-    except ValueError:
-        print('Failed to parse port number!')
-        sys.exit(-1)
+    address = int(sys.argv[1])
 
-    print('Connecting to SK7 on port %d...' % address)
+    print('Connecting to SK7 on port %s...' % address)
     if not sk7_dev.connect(address):
         print('Failed to connect')
         sys.exit(-1)
