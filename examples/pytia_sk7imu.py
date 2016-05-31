@@ -7,7 +7,7 @@ from pytia import TiAServer, TiAConnectionHandler, TiASignalConfig
 # Runs a TiA server configured to stream data from an SK7 with 5 
 # wired IMUs attached
 
-def data_callback(data):
+def tia_callback(data):
     (sig_id, sig_data) = data
     sk7_dev = sig_data[0]
 
