@@ -446,12 +446,12 @@ class TiAConnectionHandler(BaseRequestHandler):
         # then retrieve the port number that was allocated
         port = sock.getsockname()[1]
         if not self.server.manager:
-            # create an manageruisition object to read the sensors
-            pytia_logger.debug('Creating sensor managerusition thread')
+            # create an manager object to read the sensors
+            pytia_logger.debug('Creating sensor manager thread')
             self.server.manager = TiAClientManager(self.server.signals)
             self.server.manager.start()
         else:
-            pytia_logger.debug('Server manageruisition thread already exists')
+            pytia_logger.debug('Server manager thread already exists')
 
         # create a new client handler 
         datahandler = TiATCPClientHandler(sock, self.server.signals, self.server.manager, self.server.start_time)
