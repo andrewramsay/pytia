@@ -68,7 +68,7 @@ if __name__ == "__main__":
                 print(packet.get_channel(0))
                 #for i in range(packet.channels[0]):
                 #    print('   Channel %d:' % i, packet.get_channel(0, i))
-            time.sleep(0.1)
+            time.sleep(0.05)
         except KeyboardInterrupt:
             done = True
 
